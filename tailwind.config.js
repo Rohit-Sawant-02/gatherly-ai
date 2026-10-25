@@ -1,0 +1,81 @@
+/** @type {import('tailwindcss').Config} */
+export default {
+  content: [
+    "./index.html",
+    "./src/**/*.{js,jsx}",
+  ],
+  theme: {
+    extend: {
+      colors: {
+        ivory: {
+          50: '#FAF8F5',
+          100: '#F5EFE6',
+          200: '#EDE4D8',
+          300: '#DFD2C0',
+          400: '#C9B8A2',
+        },
+        sage: {
+          50: '#F3F7F4',
+          100: '#E3ECE6',
+          200: '#C7D9CE',
+          300: '#A1BFA9',
+          400: '#7B9F87',
+          500: '#5B7A68',
+          600: '#486354',
+          700: '#384E42',
+          800: '#2A3C33',
+          900: '#1D2A23',
+        },
+        gold: {
+          50: '#FDFCF7',
+          100: '#FAF5E8',
+          200: '#F2E6C8',
+          300: '#E4D19E',
+          400: '#D4B871',
+          500: '#BFA052',
+          600: '#A0823C',
+          700: '#7E642B',
+          800: '#5F4A1E',
+        },
+        charcoal: {
+          50: '#F7F8F9',
+          100: '#EDEFF1',
+          200: '#D8DBE0',
+          300: '#B7BCC6',
+          400: '#8E95A3',
+          500: '#697080',
+          600: '#4E5462',
+          700: '#3A3F4B',
+          800: '#262933',
+          900: '#1A1D24',
+          950: '#111318',
+        },
+      },
+      fontFamily: {
+        sans: [
+          'system-ui',
+          '-apple-system',
+          'BlinkMacSystemFont',
+          '"Segoe UI"',
+          'Roboto',
+          '"Helvetica Neue"',
+          'Arial',
+          'sans-serif',
+        ],
+        serif: [
+          'Georgia',
+          'Cambria',
+          '"Times New Roman"',
+          'Times',
+          'serif',
+        ],
+      },
+      boxShadow: {
+        subtle: '0 1px 3px 0 rgba(28, 30, 35, 0.05), 0 1px 2px -1px rgba(28, 30, 35, 0.05)',
+        card: '0 4px 16px -2px rgba(35, 38, 43, 0.06), 0 2px 6px -1px rgba(35, 38, 43, 0.04)',
+        elevated: '0 10px 25px -5px rgba(28, 30, 35, 0.08), 0 8px 10px -6px rgba(28, 30, 35, 0.04)',
+      },
+    },
+  },
+  plugins: [],
+};
