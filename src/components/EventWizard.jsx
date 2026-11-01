@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { ChevronRight, ChevronLeft, Sparkles, X } from 'lucide-react';
 import { useApp } from '../context/AppContext.jsx';
 import { Button, Input, Select, Textarea, Card } from './ui/index.jsx';
-import { generateId, validateEvent, generateBudgetAllocations, parseNumber } from '../utils/helpers.js';
+import { generateId, validateEvent, generateBudgetAllocations, parseNumber, DEFAULT_PRIORITIES } from '../utils/helpers.js';
 import { generateTasks } from '../utils/tasks.js';
 
 const STEPS = [
@@ -33,7 +33,7 @@ const FOOD_OPTIONS = {
 
 const empty = {
   name: '', occasion: '', date: '', location: '',
-  guestCount: '', budget: '', theme: '', foodPreferences: '', notes: '',
+  guestCount: '', budget: '', theme: '', foodPreferences: '', primaryFocus: 'balanced', notes: '',
 };
 
 function StepIndicator({ current }) {
@@ -122,13 +122,25 @@ export default function EventWizard() {
       return;
     }
     const id = generateId();
+    const guestNum = parseNumber(form.guestCount);
+    const budgetNum = parseNumber(form.budget);
+
+    // Map primary focus to initial category priorities
+    const basePriorities = { ...(DEFAULT_PRIORITIES[form.occasion] || DEFAULT_PRIORITIES.wedding) };
+    if (form.primaryFocus === 'food') basePriorities.catering = 'high';
+    if (form.primaryFocus === 'venue') basePriorities.venue = 'high';
+    if (form.primaryFocus === 'photography') basePriorities.photography = 'high';
+    if (form.primaryFocus === 'decor') basePriorities.decorations = 'high';
+
     const tasks = generateTasks(form.occasion, form.date);
-    const budgetAllocations = generateBudgetAllocations(parseNumber(form.budget), form.occasion);
+    const budgetAllocations = generateBudgetAllocations(budgetNum, form.occasion, guestNum, basePriorities);
+
     const newEvent = {
       id,
       ...form,
-      guestCount: parseNumber(form.guestCount),
-      budget: parseNumber(form.budget),
+      guestCount: guestNum,
+      budget: budgetNum,
+      priorities: basePriorities,
       tasks,
       budget_allocations: budgetAllocations,
       createdAt: new Date().toISOString(),
@@ -216,9 +228,21 @@ export default function EventWizard() {
         {/* Step 3 */}
         {step === 3 && (
           <div className="space-y-4">
-            <h2 className="text-lg font-semibold text-charcoal-900 mb-4">Style & Preferences</h2>
+            <h2 className="text-lg font-semibold text-charcoal-900 mb-4">Style & Priorities</h2>
             {form.occasion ? (
               <>
+                <Select
+                  id="primaryFocus" label="Primary Planning Focus"
+                  value={form.primaryFocus} onChange={set('primaryFocus')}
+                  options={[
+                    { value: 'balanced', label: 'Balanced Experience' },
+                    { value: 'food', label: 'Food & Catering Focus' },
+                    { value: 'venue', label: 'Venue & Ambience Focus' },
+                    { value: 'photography', label: 'Photography & Memories Focus' },
+                    { value: 'decor', label: 'Decorations & Theme Focus' },
+                  ]}
+                  hint="We will weight initial budget recommendations around your top focus"
+                />
                 <Select
                   id="theme" label="Preferred Theme"
                   value={form.theme} onChange={set('theme')}
@@ -265,6 +289,7 @@ export default function EventWizard() {
               <ReviewRow label="Location" value={form.location} />
               <ReviewRow label="Guests" value={form.guestCount ? `${form.guestCount} people` : ''} />
               <ReviewRow label="Budget" value={form.budget ? `₹${parseNumber(form.budget).toLocaleString('en-IN')}` : ''} />
+              <ReviewRow label="Planning Focus" value={form.primaryFocus} />
               <ReviewRow label="Theme" value={form.theme} />
               <ReviewRow label="Food" value={form.foodPreferences} />
               <ReviewRow label="Notes" value={form.notes} />

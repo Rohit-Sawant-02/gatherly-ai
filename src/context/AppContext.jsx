@@ -1,7 +1,9 @@
 import React, { createContext, useContext, useReducer, useEffect, useCallback } from 'react';
-import { KEYS, getItem, setItem } from '../utils/storage.js';
+import { KEYS, getItem, setItem, removeItem } from '../utils/storage.js';
 
 const AppContext = createContext(null);
+
+const initialUser = getItem(KEYS.AUTH_SESSION, null);
 
 const initialState = {
   events: [],
@@ -10,10 +12,26 @@ const initialState = {
   settings: { demoLoaded: false },
   activeSection: 'dashboard',
   activeEventId: null,
+  user: initialUser,
+  isAuthenticated: Boolean(initialUser),
 };
 
 function reducer(state, action) {
   switch (action.type) {
+    // ─ Auth ────────────────────────────────────────────────────────────────
+    case 'LOGIN':
+      return {
+        ...state,
+        user: action.payload,
+        isAuthenticated: true,
+      };
+    case 'LOGOUT':
+      return {
+        ...state,
+        user: null,
+        isAuthenticated: false,
+      };
+
     // ─ Events ──────────────────────────────────────────────────────────────
     case 'SET_EVENTS':
       return { ...state, events: action.payload };
@@ -76,7 +94,11 @@ function reducer(state, action) {
 
     // ─ Clear all ───────────────────────────────────────────────────────────
     case 'CLEAR_ALL':
-      return { ...initialState };
+      return {
+        ...initialState,
+        user: state.user,
+        isAuthenticated: state.isAuthenticated,
+      };
 
     default:
       return state;
@@ -93,6 +115,7 @@ export function AppProvider({ children }) {
     const validActiveId = loadedEvents.some(e => e.id === savedActiveId)
       ? savedActiveId
       : (loadedEvents[0]?.id || null);
+    const savedUser = getItem(KEYS.AUTH_SESSION, null);
 
     dispatch({
       type: 'LOAD_ALL',
@@ -102,6 +125,8 @@ export function AppProvider({ children }) {
         savedIdeas: getItem(KEYS.SAVED_IDEAS, []),
         settings: getItem(KEYS.SETTINGS, { demoLoaded: false }),
         activeEventId: validActiveId,
+        user: savedUser,
+        isAuthenticated: Boolean(savedUser),
       },
     });
   }, []);
@@ -112,16 +137,28 @@ export function AppProvider({ children }) {
   useEffect(() => { setItem(KEYS.SAVED_IDEAS, state.savedIdeas); }, [state.savedIdeas]);
   useEffect(() => { setItem(KEYS.SETTINGS, state.settings); }, [state.settings]);
   useEffect(() => { setItem(KEYS.ACTIVE_EVENT_ID, state.activeEventId); }, [state.activeEventId]);
+  useEffect(() => {
+    if (state.user) {
+      setItem(KEYS.AUTH_SESSION, state.user);
+    } else {
+      removeItem(KEYS.AUTH_SESSION);
+    }
+  }, [state.user]);
 
   const navigate = useCallback((section, eventId = null) => {
     dispatch({ type: 'SET_SECTION', payload: section });
     if (eventId !== null) dispatch({ type: 'SET_ACTIVE_EVENT', payload: eventId });
   }, []);
 
+  const logout = useCallback(() => {
+    removeItem(KEYS.AUTH_SESSION);
+    dispatch({ type: 'LOGOUT' });
+  }, []);
+
   const activeEvent = state.events.find(e => e.id === state.activeEventId) || null;
 
   return (
-    <AppContext.Provider value={{ state, dispatch, navigate, activeEvent }}>
+    <AppContext.Provider value={{ state, dispatch, navigate, logout, activeEvent }}>
       {children}
     </AppContext.Provider>
   );

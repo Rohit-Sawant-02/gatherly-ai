@@ -1,14 +1,15 @@
 import React, { useState, useRef } from 'react';
-import { Trash2, Download, Database, RefreshCw, AlertTriangle, CheckCircle, Upload } from 'lucide-react';
+import { Trash2, Download, Database, RefreshCw, AlertTriangle, CheckCircle, Upload, LogOut, User, Shield } from 'lucide-react';
 import { useApp } from '../context/AppContext.jsx';
 import { Button, Card, SectionHeader, ConfirmDialog } from './ui/index.jsx';
 import { clearAll, exportData, storageAvailable, setItem, KEYS } from '../utils/storage.js';
 import { getDemoEvents, getDemoVendors } from '../data/demo.js';
 
 export default function Settings() {
-  const { state, dispatch } = useApp();
+  const { state, dispatch, logout } = useApp();
   const [confirmClear, setConfirmClear] = useState(false);
   const [confirmDemo, setConfirmDemo] = useState(false);
+  const [confirmLogout, setConfirmLogout] = useState(false);
   const [successMsg, setSuccessMsg] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
   const fileInputRef = useRef(null);
@@ -54,36 +55,102 @@ export default function Settings() {
     const reader = new FileReader();
     reader.onload = (event) => {
       try {
-        const parsed = JSON.parse(event.target.result);
-        if (!parsed || (typeof parsed !== 'object')) {
-          throw new Error('Invalid JSON structure');
+        const text = event.target.result;
+        if (!text || typeof text !== 'string') {
+          throw new Error('File content is empty or unreadable.');
         }
 
-        const events = Array.isArray(parsed.events) ? parsed.events : [];
-        const vendors = Array.isArray(parsed.vendors) ? parsed.vendors : [];
-        const savedIdeas = Array.isArray(parsed.savedIdeas) ? parsed.savedIdeas : [];
+        const parsed = JSON.parse(text);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          throw new Error('Root JSON must be an object with export metadata.');
+        }
+
+        // Validate and sanitize events
+        const rawEvents = Array.isArray(parsed.events) ? parsed.events : [];
+        const validatedEvents = rawEvents
+          .filter(ev => ev && typeof ev === 'object' && typeof ev.name === 'string' && ev.name.trim().length > 0)
+          .map(ev => ({
+            id: String(ev.id || Date.now()),
+            name: String(ev.name).trim().slice(0, 120),
+            occasion: ['wedding', 'birthday', 'community'].includes(ev.occasion) ? ev.occasion : 'birthday',
+            date: typeof ev.date === 'string' ? ev.date : '',
+            location: typeof ev.location === 'string' ? ev.location.slice(0, 150) : '',
+            guestCount: Math.max(1, Number(ev.guestCount) || 1),
+            budget: Math.max(0, Number(ev.budget) || 0),
+            theme: typeof ev.theme === 'string' ? ev.theme.slice(0, 100) : '',
+            foodPreferences: typeof ev.foodPreferences === 'string' ? ev.foodPreferences.slice(0, 150) : '',
+            notes: typeof ev.notes === 'string' ? ev.notes.slice(0, 500) : '',
+            tasks: Array.isArray(ev.tasks)
+              ? ev.tasks.map(t => ({
+                  id: String(t.id || Math.random()),
+                  title: String(t.title || 'Untitled task').slice(0, 120),
+                  deadline: typeof t.deadline === 'string' ? t.deadline : null,
+                  priority: ['high', 'medium', 'low'].includes(t.priority) ? t.priority : 'medium',
+                  completed: Boolean(t.completed),
+                  custom: Boolean(t.custom),
+                  dependsOn: Array.isArray(t.dependsOn) ? t.dependsOn.map(String) : [],
+                }))
+              : [],
+            budget_allocations: Array.isArray(ev.budget_allocations)
+              ? ev.budget_allocations.map(a => ({
+                  id: String(a.id || Math.random()),
+                  label: String(a.label || 'Category').slice(0, 50),
+                  allocated: Math.max(0, Number(a.allocated) || 0),
+                  spent: Math.max(0, Number(a.spent) || 0),
+                  percentage: Number(a.percentage) || 0,
+                }))
+              : [],
+            priorities: ev.priorities && typeof ev.priorities === 'object' ? ev.priorities : {},
+            createdAt: typeof ev.createdAt === 'string' ? ev.createdAt : new Date().toISOString(),
+          }));
+
+        // Validate and sanitize vendors
+        const rawVendors = Array.isArray(parsed.vendors) ? parsed.vendors : [];
+        const validatedVendors = rawVendors
+          .filter(v => v && typeof v === 'object' && typeof v.name === 'string' && v.name.trim().length > 0)
+          .map(v => ({
+            id: String(v.id || Math.random()),
+            eventId: String(v.eventId || ''),
+            name: String(v.name).trim().slice(0, 100),
+            category: String(v.category || 'other'),
+            contact: typeof v.contact === 'string' ? v.contact.slice(0, 60) : '',
+            price: Math.max(0, Number(v.price) || 0),
+            guestCapacity: Number(v.guestCapacity) || 0,
+            additionalCharges: Number(v.additionalCharges) || 0,
+            servicesIncluded: typeof v.servicesIncluded === 'string' ? v.servicesIncluded.slice(0, 300) : '',
+            notes: typeof v.notes === 'string' ? v.notes.slice(0, 500) : '',
+            status: ['enquired', 'quoted', 'booked', 'paid', 'cancelled'].includes(v.status) ? v.status : 'enquired',
+            _demo: Boolean(v._demo),
+          }));
+
+        const savedIdeas = Array.isArray(parsed.savedIdeas) ? parsed.savedIdeas.filter(i => typeof i === 'string') : [];
         const settings = parsed.settings && typeof parsed.settings === 'object' ? parsed.settings : { demoLoaded: false };
 
         dispatch({
           type: 'LOAD_ALL',
-          payload: { events, vendors, savedIdeas, settings, activeEventId: events[0]?.id || null },
+          payload: {
+            events: validatedEvents,
+            vendors: validatedVendors,
+            savedIdeas,
+            settings,
+            activeEventId: validatedEvents[0]?.id || null,
+          },
         });
 
-        setItem(KEYS.EVENTS, events);
-        setItem(KEYS.VENDORS, vendors);
+        setItem(KEYS.EVENTS, validatedEvents);
+        setItem(KEYS.VENDORS, validatedVendors);
         setItem(KEYS.SAVED_IDEAS, savedIdeas);
         setItem(KEYS.SETTINGS, settings);
 
-        showSuccess(`Backup imported! ${events.length} event${events.length !== 1 ? 's' : ''} and ${vendors.length} vendor${vendors.length !== 1 ? 's' : ''} loaded.`);
+        showSuccess(`Backup successfully validated and imported! Loaded ${validatedEvents.length} event${validatedEvents.length !== 1 ? 's' : ''} and ${validatedVendors.length} vendor${validatedVendors.length !== 1 ? 's' : ''}.`);
       } catch (err) {
-        showError('Failed to import backup: invalid or corrupted JSON file.');
+        showError(`Failed to import backup: ${err.message || 'invalid or corrupted JSON file.'}`);
       }
     };
     reader.onerror = () => {
       showError('Failed to read the selected file.');
     };
     reader.readAsText(file);
-    // Reset file input
     e.target.value = '';
   };
 
@@ -130,6 +197,45 @@ export default function Settings() {
               <p className="text-xs text-charcoal-400">{s.label}</p>
             </div>
           ))}
+        </div>
+      </Card>
+
+      {/* Account & Session Management */}
+      <Card className="mb-6 border-sage-200 bg-gradient-to-br from-white to-ivory-50/70">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div className="p-3 bg-sage-100 rounded-xl text-sage-700">
+              <User size={22} aria-hidden="true" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h2 className="text-base font-semibold text-charcoal-900">
+                  {state.user?.name || 'Demo Evaluator'}
+                </h2>
+                <span className="text-[10px] bg-sage-100 text-sage-800 font-semibold px-2 py-0.5 rounded-full">
+                  Demo Session
+                </span>
+              </div>
+              <p className="text-xs text-charcoal-500 font-mono mt-0.5">
+                {state.user?.email || 'demo@gatherly.app'}
+              </p>
+              <p className="text-[11px] text-charcoal-400 mt-1 flex items-center gap-1">
+                <Shield size={12} className="text-sage-600" aria-hidden="true" />
+                Session persisted in browser localStorage · Logging out preserves all event data
+              </p>
+            </div>
+          </div>
+          <div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setConfirmLogout(true)}
+              className="text-red-600 border-red-300 hover:bg-red-50"
+            >
+              <LogOut size={14} aria-hidden="true" />
+              Log Out of Demo
+            </Button>
+          </div>
         </div>
       </Card>
 
@@ -208,15 +314,28 @@ export default function Settings() {
 
       {/* Privacy notice */}
       <Card className="bg-charcoal-50 border-charcoal-200">
-        <h2 className="text-sm font-semibold text-charcoal-700 mb-2">Privacy Notice</h2>
+        <h2 className="text-sm font-semibold text-charcoal-700 mb-2">Privacy & Security Transparency Notice</h2>
         <ul className="text-xs text-charcoal-500 space-y-1 list-disc list-inside">
-          <li>All data is stored only in your browser's localStorage.</li>
-          <li>No data is sent to any server, API, or third-party service.</li>
-          <li>Clearing browser data will erase all Gatherly data.</li>
-          <li>Gatherly AI does not use a live AI model or external API.</li>
-          <li>The planning assistant works offline using local rule-based logic.</li>
+          <li>All event data is stored exclusively in your browser's localStorage.</li>
+          <li>No data is transmitted to external servers, remote databases, or third-party APIs.</li>
+          <li>Demo login provides simulated client-side authentication for hackathon evaluation and does not require a backend.</li>
+          <li>Logging out preserves your events, tasks, budgets, and vendors in localStorage.</li>
+          <li>Gatherly AI does not use a live generative AI model or cloud API. All planning recommendations, budget formulas, and assistant answers use deterministic local rules.</li>
         </ul>
       </Card>
+
+      <ConfirmDialog
+        isOpen={confirmLogout}
+        onCancel={() => setConfirmLogout(false)}
+        onConfirm={() => {
+          setConfirmLogout(false);
+          logout();
+        }}
+        title="Log Out of Demo"
+        message="Logging out returns you to the demo login screen. All your saved events, budgets, tasks, and vendors will remain safely preserved in this browser."
+        confirmLabel="Log Out"
+        danger={false}
+      />
 
       <ConfirmDialog
         isOpen={confirmClear}

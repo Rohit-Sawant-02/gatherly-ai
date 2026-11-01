@@ -6,6 +6,7 @@ const KEYS = {
   SETTINGS: 'gatherly_settings',
   SAVED_IDEAS: 'gatherly_saved_ideas',
   ACTIVE_EVENT_ID: 'gatherly_active_event_id',
+  AUTH_SESSION: 'gatherly_auth_session',
 };
 
 export { KEYS };

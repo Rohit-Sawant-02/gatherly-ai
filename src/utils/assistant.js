@@ -1,102 +1,198 @@
 /**
- * Local rule-based planning assistant.
- * No external AI API is used. Responses are generated from deterministic
- * templates and event context. The feature is intentionally transparent
- * about how it works.
+ * Local rule-based planning assistant for Gatherly AI.
+ *
+ * TRANSPARENCY & ACCURACY NOTICE:
+ * This assistant executes entirely in-browser using deterministic client-side logic,
+ * event state inspection, dependency graphs, and structured decision rules.
+ * It is NOT a live generative AI model and does NOT call external AI APIs.
+ * All budget ratios, timelines, and trade-off recommendations are illustrative
+ * planning estimates based on Indian event standards.
  */
 
-import { formatINR, daysUntil, urgencyLevel, BUDGET_CATEGORIES } from './helpers.js';
+import {
+  formatINR,
+  daysUntil,
+  urgencyLevel,
+  parseNumber,
+  BUDGET_CATEGORIES,
+  DEFAULT_PRIORITIES,
+  generateContextualBudgetAllocations,
+  detectBudgetConflicts,
+  generateTradeOffSuggestions,
+} from './helpers.js';
+import { getTaskDependencyStatus } from './tasks.js';
 
-// ─── Intent patterns ──────────────────────────────────────────────────────────
+// ─── Intent Detection ────────────────────────────────────────────────────────
+
+const OUT_OF_SCOPE = [
+  'stock', 'stocks', 'bitcoin', 'crypto', 'poem', 'poetry', 'weather', 'movie', 'song', 'joke', 'coding', 'politics', 'medical', 'legal advice'
+];
 
 const INTENTS = [
-  { key: 'plan',        patterns: ['generate plan', 'generate my plan', 'plan', 'roadmap', 'refresh suggestion', 'refresh', 'recalculate', 'summary', 'overview'] },
-  { key: 'budget',      patterns: ['budget', 'cost', 'price', 'spend', 'money', 'afford', 'cheap', 'expensive', 'rupee', '₹'] },
-  { key: 'decoration',  patterns: ['decor', 'decoration', 'theme', 'colour', 'color', 'flower', 'balloon', 'setup', 'look'] },
-  { key: 'food',        patterns: ['food', 'catering', 'menu', 'eat', 'drink', 'cake', 'snack', 'meal', 'cuisine', 'buffet'] },
-  { key: 'venue',       patterns: ['venue', 'location', 'place', 'hall', 'garden', 'outdoor', 'indoor', 'banquet'] },
-  { key: 'guest',       patterns: ['guest', 'people', 'invite', 'attendance', 'headcount', 'crowd'] },
-  { key: 'urgent',      patterns: ['urgent', 'asap', 'soon', 'quick', 'hurry', 'time', 'deadline', 'pending', 'left'] },
-  { key: 'checklist',   patterns: ['task', 'checklist', 'todo', 'to-do', 'done', 'complete', 'pending', 'next step'] },
-  { key: 'vendor',      patterns: ['vendor', 'supplier', 'book', 'hire', 'caterer', 'photographer', 'dj', 'florist'] },
-  { key: 'ideas',       patterns: ['idea', 'suggest', 'recommend', 'inspiration', 'creative', 'unique', 'special'] },
-  { key: 'greeting',    patterns: ['hello', 'hi', 'hey', 'help', 'start', 'what can you do', 'how are you'] },
+  { key: 'plan',        patterns: ['generate plan', 'generate my plan', 'my plan', 'roadmap', 'refresh suggestion', 'recalculate', 'summary', 'overview', 'master plan'] },
+  { key: 'tradeoff',    patterns: ['tradeoff', 'trade-off', 'cut expense', 'cut expenses', 'cut cost', 'cut costs', 'save money', 'reduce cost', 'lower budget', 'tight budget', 'reduce spend', 'cut budget', 'where to cut', 'where should i cut', 'cut'] },
+  { key: 'dependency',  patterns: ['dependency', 'dependencies', 'first step', 'what first', 'what next', 'order of task', 'sequence', 'prerequisite', 'prerequisites', 'before'] },
+  { key: 'guest_impact',patterns: ['guest count', 'more guests', 'increase guest', 'increase guests', 'guest increase', 'per person', 'per head', 'per plate', 'headcount', 'attendance'] },
+  { key: 'budget',      patterns: ['budget', 'budgets', 'split budget', 'how to split', 'spend', 'spending', 'money', 'allocation', 'allocations', 'rupee', '₹', 'expensive', 'cost', 'costs'] },
+  { key: 'food',        patterns: ['food', 'catering', 'caterer', 'menu', 'eat', 'drink', 'cake', 'snack', 'snacks', 'meal', 'cuisine', 'buffet', 'diet'] },
+  { key: 'venue',       patterns: ['venue', 'location', 'hall', 'garden', 'banquet', 'ballroom', 'capacity'] },
+  { key: 'decoration',  patterns: ['decor', 'decoration', 'decorations', 'theme', 'flower', 'flowers', 'balloon', 'balloons', 'setup', 'stage', 'props'] },
+  { key: 'photo',       patterns: ['photo', 'photography', 'videographer', 'photographer', 'album', 'shoot', 'camera'] },
+  { key: 'urgent',      patterns: ['urgent', 'asap', 'hurry', 'deadline', 'overdue', 'critical'] },
+  { key: 'checklist',   patterns: ['task', 'tasks', 'checklist', 'todo', 'to-do', 'progress', 'status', 'milestone'] },
+  { key: 'vendor',      patterns: ['vendor', 'vendors', 'supplier', 'suppliers', 'quote', 'quotes', 'quotation', 'quotations', 'compare quote', 'hire'] },
+  { key: 'ideas',       patterns: ['idea', 'ideas', 'inspiration', 'creative', 'theme idea'] },
+  { key: 'greeting',    patterns: ['hello', 'hi', 'hey', 'help', 'start', 'what can you do', 'who are you'] },
 ];
 
 function detectIntent(input) {
-  const lower = input.toLowerCase();
+  const lower = String(input || '').toLowerCase().trim();
+  if (!lower) return 'general';
+
+  // Early-exit for queries completely outside event planning scope
+  if (OUT_OF_SCOPE.some(term => new RegExp(`\\b${term}\\b`, 'i').test(lower))) {
+    return 'general';
+  }
+
   for (const intent of INTENTS) {
-    if (intent.patterns.some(p => lower.includes(p))) return intent.key;
+    for (const pattern of intent.patterns) {
+      if (pattern.includes(' ') || pattern.includes('-') || pattern.includes('₹')) {
+        if (lower.includes(pattern)) return intent.key;
+      } else {
+        const regex = new RegExp(`\\b${pattern}\\b`, 'i');
+        if (regex.test(lower)) return intent.key;
+      }
+    }
   }
   return 'general';
 }
 
-// ─── Response templates per occasion ─────────────────────────────────────────
+const OCCASION_LABEL = {
+  wedding: 'wedding',
+  birthday: 'birthday celebration',
+  community: 'community event',
+};
 
-const OCCASION_LABEL = { wedding: 'wedding', birthday: 'birthday celebration', community: 'community event' };
+// ─── Intent Responders ───────────────────────────────────────────────────────
 
 function greetingResponse(event) {
   if (!event) {
     return {
-      message: `👋 Hi! I'm the **Gatherly Assistant** — your built-in event planning guide.\n\nI use local rules and event data to give you tailored suggestions. No internet connection or AI service is required.\n\nStart by creating an event, then ask me anything like:\n- *"What should I do first?"*\n- *"How should I split my budget?"*\n- *"Give me decoration ideas."*`,
-      suggestions: ['What can you help with?', 'How do I create an event?', 'Give me some tips'],
+      message: `👋 Hi! I'm the **Gatherly Assistant** — your context-aware event planning guide.\n\nI use local rules and your event details to provide tailored planning recommendations, milestone tracking, and budget trade-offs. No external AI API is used.\n\nTo get started, create an event or ask:\n- *"How should I plan my budget?"*\n- *"What tasks should I do first?"*\n- *"Where can I cut expenses without sacrificing quality?"*`,
+      suggestions: ['How do I create an event?', 'What can you help with?', 'Give me budget tips'],
     };
   }
+
   const days = daysUntil(event.date);
   const urgency = urgencyLevel(days);
   const label = OCCASION_LABEL[event.occasion] || event.occasion;
-  const budgetLine = event.budget ? ` with a budget of ${formatINR(event.budget)}` : '';
-  const guestLine = event.guestCount ? ` for ${event.guestCount} guests` : '';
-  const dayLine = days === null ? '' : days === 0 ? ' \u2014 **Event Day!**' : days < 0 ? ` \u2014 it was ${Math.abs(days)} days ago` : ` \u2014 **${days} days to go**`;
+  const budget = parseNumber(event.budget);
+  const guests = parseNumber(event.guestCount) || 1;
+  const perGuest = Math.round(budget / guests);
 
+  const dayLine = days === null ? '' : days === 0 ? ' \u2014 **Event Day!**' : days < 0 ? ` \u2014 it was ${Math.abs(days)} days ago` : ` \u2014 **${days} days remaining**`;
   let urgencyMsg = '';
-  if (urgency === 'critical') urgencyMsg = '\n\n⚠️ **Your event is very soon!** Let\'s focus on the most critical tasks.';
-  else if (urgency === 'high') urgencyMsg = '\n\n📋 With less than 2 weeks remaining, let\'s prioritise your top tasks.';
+  if (urgency === 'critical') urgencyMsg = '\n\n⚠️ **Urgent timeline:** Your celebration is in less than 4 days. Focus strictly on final day-of coordination.';
+  else if (urgency === 'high') urgencyMsg = '\n\n📋 **Approaching milestone:** Less than 2 weeks to go. Ensure all vendor bookings and final guest headcounts are locked.';
 
   return {
-    message: `👋 Hello! I'm helping you plan **${event.name}** — your ${label}${guestLine}${budgetLine}${dayLine}.${urgencyMsg}\n\nWhat would you like to know?`,
-    suggestions: getBudgetSuggestions(event).concat(['Decoration ideas', 'Food planning tips', 'What should I do next?']).slice(0, 4),
+    message: `👋 Hello! I'm actively assisting with **${event.name}** — your ${label} for **${guests} guests** with a budget of **${formatINR(budget)}** (~${formatINR(perGuest)}/guest)${dayLine}.${urgencyMsg}\n\nWhat would you like to plan right now?`,
+    suggestions: ['What should I do first?', 'How should I split my budget?', 'Where can I cut costs?', 'Food planning tips'],
   };
 }
 
-function getBudgetSuggestions(event) {
-  const budget = Number(event.budget) || 0;
-  const guests = Number(event.guestCount) || 0;
-  const perPerson = guests > 0 ? Math.round(budget / guests) : 0;
-  if (perPerson < 500) return ['Budget-saving tips'];
-  if (perPerson < 2000) return ['Mid-range budget tips'];
-  return ['Premium planning tips'];
-}
-
-function budgetResponse(event, tasks) {
+function budgetResponse(event, tasks = []) {
   if (!event) return fallbackResponse();
-  const budget = Number(event.budget) || 0;
-  const guests = Number(event.guestCount) || 0;
-  const perPerson = guests > 0 ? Math.round(budget / guests) : 0;
-  const occasion = event.occasion || 'birthday';
+  const budget = parseNumber(event.budget);
+  const guests = Math.max(1, parseNumber(event.guestCount));
+  const occasion = event.occasion || 'wedding';
+  const perPerson = Math.round(budget / guests);
 
-  const alloc = {
-    wedding: { venue: 30, catering: 30, decorations: 15, photography: 12, entertainment: 5, invitations: 3, misc: 5 },
-    birthday: { venue: 20, catering: 35, decorations: 20, photography: 10, entertainment: 8, invitations: 2, misc: 5 },
-    community: { venue: 25, catering: 30, decorations: 15, photography: 8, entertainment: 12, invitations: 5, misc: 5 },
-  }[occasion] || {};
+  let allocations = event.budget_allocations;
+  if (!allocations || allocations.length === 0) {
+    allocations = generateContextualBudgetAllocations(budget, occasion, guests, event.priorities || {});
+  }
 
-  const lines = Object.entries(alloc).map(([cat, pct]) => {
-    const amt = Math.round((pct / 100) * budget);
-    return `- **${cat.charAt(0).toUpperCase() + cat.slice(1)}**: ${formatINR(amt)} (${pct}%)`;
+  const lines = allocations.map(a => {
+    const amt = parseNumber(a.allocated);
+    const pct = a.percentage || (budget > 0 ? Math.round((amt / budget) * 100) : 0);
+    const perHeadNote = a.id === 'catering' ? ` (~${formatINR(Math.round(amt / guests))}/plate)` : '';
+    return `- **${a.label}**: ${formatINR(amt)} (${pct}%)${perHeadNote}`;
   });
 
-  let perPersonNote = '';
-  if (guests > 0) perPersonNote = `\n\nWith ${guests} guests, that's approximately **${formatINR(perPerson)} per person**.`;
+  const conflicts = detectBudgetConflicts(budget, allocations, guests, occasion);
+  let conflictAlert = '';
+  if (conflicts.length > 0 && conflicts[0].type !== 'under_allocated') {
+    conflictAlert = `\n\n⚠️ **Budget Notice:** ${conflicts[0].message}`;
+  }
 
-  let tier = '';
-  if (perPerson < 500) tier = '\n\n💡 **Tip:** At this budget, focus on DIY decorations, potluck-style food, and free venue options like a home or park.';
-  else if (perPerson < 1500) tier = '\n\n💡 **Tip:** A good mid-range approach — prioritise venue and food, and keep photography simple.';
-  else tier = '\n\n💡 **Tip:** With a premium budget, you can consider a full-service venue package that bundles catering and decor.';
+  const occLabel = OCCASION_LABEL[occasion] || occasion;
 
   return {
-    message: `💰 **Suggested budget split for your ${OCCASION_LABEL[occasion] || 'event'} (${formatINR(budget)} total):**\n\n${lines.join('\n')}${perPersonNote}${tier}\n\n*These are illustrative estimates based on typical event ratios — not market quotes. Edit amounts in the Budget Planner.*`,
-    suggestions: ['Decoration ideas', 'Food tips', 'How many tasks are left?'],
+    message: `💰 **Contextual Budget Breakdown for your ${occLabel} (${event.name} — ${formatINR(budget)} total for ${guests} guests):**\n\n${lines.join('\n')}\n\n- **Overall Spend**: ~**${formatINR(perPerson)} per guest**\n- **Catering Benchmark**: ${formatINR(Math.round((allocations.find(a => a.id === 'catering')?.allocated || 0) / guests))}/guest${conflictAlert}\n\n*Estimates are illustrative planning figures based on your priorities and Indian event norms. Adjust them anytime in the Budget Planner.*`,
+    suggestions: ['Where can I cut costs?', 'What tasks should I do first?', 'Food planning tips', 'Vendor comparison tips'],
+  };
+}
+
+function tradeOffResponse(event, tasks = []) {
+  if (!event) return fallbackResponse();
+  const allocations = event.budget_allocations || [];
+  const tradeOffs = generateTradeOffSuggestions(event, allocations);
+  const priorities = event.priorities || DEFAULT_PRIORITIES[event.occasion] || {};
+
+  const highPriorities = BUDGET_CATEGORIES
+    .filter(c => (priorities[c.id] || 'medium') === 'high')
+    .map(c => c.label);
+
+  if (tradeOffs.length === 0) {
+    return {
+      message: `⚖️ **Trade-Off Analysis:**\n\nYour current allocations for **${event.name}** are well-balanced within your ${formatINR(event.budget)} budget. High priority items (${highPriorities.join(', ')}) are protected.\n\nIf you need to free up funds, consider negotiating vendor packaging discounts in the Vendor Manager.`,
+      suggestions: ['How should I split my budget?', 'What should I do first?'],
+    };
+  }
+
+  const tradeOffLines = tradeOffs.map(to =>
+    `- **${to.categoryLabel}** (Save ~${formatINR(to.saving)}):\n  ${to.rationale}\n  *Trade-off impact: ${to.tradeoff}*`
+  ).join('\n\n');
+
+  return {
+    message: `⚖️ **Smart Priority-Based Trade-Off Suggestions:**\n\nTo keep your budget balanced without compromising your top priorities (**${highPriorities.slice(0, 3).join(' & ')}**), here are structured areas to optimize:\n\n${tradeOffLines}\n\n💡 *Unlike equal across-the-board cuts, priority trade-offs protect what matters most to your event experience. You can apply these in the Budget Planner.*`,
+    suggestions: ['How should I split my budget?', 'Food planning tips', 'What should I do first?'],
+  };
+}
+
+function dependencyResponse(event, tasks = []) {
+  if (!event) return fallbackResponse();
+  const allTasks = tasks || event.tasks || [];
+  const days = daysUntil(event.date);
+
+  const pending = allTasks.filter(t => !t.completed);
+  const readyTasks = pending.filter(t => !getTaskDependencyStatus(t, allTasks).isBlocked);
+  const blockedTasks = pending.filter(t => getTaskDependencyStatus(t, allTasks).isBlocked);
+
+  const readyLines = readyTasks.slice(0, 3).map(t => `- 🟢 **${t.title}** (Priority: ${t.priority.toUpperCase()})`).join('\n');
+  const blockedLines = blockedTasks.slice(0, 2).map(t => {
+    const status = getTaskDependencyStatus(t, allTasks);
+    return `- 🔒 **${t.title}** (Waiting for: *${status.pendingPrerequisites[0]}*)`;
+  }).join('\n');
+
+  return {
+    message: `🔗 **Dependency & Milestone Sequence for ${event.name}:**\n\nEvent planning follows strict sequential dependencies:\n1. **Venue & Date Lock**: Essential first step. Caterers, decorators, and photographers cannot confirm bookings without confirmed venue logistics.\n2. **Guest List Finalization**: Must precede printing formal invitations and finalizing per-head catering counts.\n3. **Vendor Confirmations**: Proceed once venue, catering, and decor specifications align.\n\n**Ready to Action Right Now:**\n${readyLines || '- All pending tasks currently waiting on prerequisites.'}\n\n${blockedTasks.length > 0 ? `**Dependent Tasks Waiting on Prerequisites:**\n${blockedLines}` : 'No blocked tasks!'}\n\n*Track and unlock tasks in Timeline & Tasks.*`,
+    suggestions: ['What should I do first?', 'How should I split my budget?', 'Where can I cut costs?'],
+  };
+}
+
+function guestImpactResponse(event, tasks = []) {
+  if (!event) return fallbackResponse();
+  const budget = parseNumber(event.budget);
+  const guests = parseNumber(event.guestCount) || 1;
+  const plateRate = event.occasion === 'wedding' ? 1200 : event.occasion === 'birthday' ? 500 : 250;
+  const currentCatering = guests * plateRate;
+  const add50Cost = 50 * plateRate;
+
+  return {
+    message: `👥 **Guest Count & Capacity Ripple Effect:**\n\n- **Current Count**: ${guests} guests\n- **Total Budget**: ${formatINR(budget)} (~${formatINR(Math.round(budget / guests))}/guest)\n- **Estimated Catering**: ~${formatINR(currentCatering)} at ~${formatINR(plateRate)}/plate\n\n**Connected Decisions When Guest Count Changes:**\n- **+50 Guests**: Adds approx **${formatINR(add50Cost)}** in food and drinks alone, plus additional tables, invitations, and seating.\n- **Venue Capacity**: Ensure your booked venue supports ${guests + 50} pax with parking and fire clearance.\n- **Trade-Off**: If headcount increases, either expand the total budget or reduce decor/entertainment allocations.\n\n*Update your guest count in My Events to trigger automatic recalculations.*`,
+    suggestions: ['Where can I cut costs?', 'How should I split my budget?', 'Food planning tips'],
   };
 }
 
@@ -109,7 +205,6 @@ function generatePlanResponse(event, tasks = []) {
   }
   const days = daysUntil(event.date);
   const pending = (tasks || []).filter(t => !t.completed);
-  const urgentTasks = pending.filter(t => t.priority === 'high').slice(0, 3);
   const total = tasks?.length || 0;
   const done = total - pending.length;
   const progressPct = total > 0 ? Math.round((done / total) * 100) : 0;
@@ -118,16 +213,20 @@ function generatePlanResponse(event, tasks = []) {
   const topCategories = [...alloc].sort((a, b) => (b.allocated || 0) - (a.allocated || 0)).slice(0, 3);
   const catLines = topCategories.map(c => `- **${c.label}**: ${formatINR(c.allocated)}`).join('\n');
 
-  const themeNote = event.theme ? `\n- **Theme Style**: ${event.theme}` : '';
-  const foodNote = event.foodPreferences ? `\n- **Food Style**: ${event.foodPreferences}` : '';
+  // Next unblocked urgent tasks
+  const unblockedPending = pending.filter(t => !getTaskDependencyStatus(t, tasks).isBlocked);
+  const nextTasks = unblockedPending.slice(0, 3);
+  const nextStepLines = nextTasks.length > 0
+    ? nextTasks.map(t => `- 🟢 ${t.title} (${t.priority.toUpperCase()})`).join('\n')
+    : '- All immediate high-priority milestones are completed or blocked by prerequisites!';
 
-  const nextStepLines = urgentTasks.length > 0
-    ? urgentTasks.map(t => `- 🔴 ${t.title}`).join('\n')
-    : '- All high-priority items currently in progress!';
+  const themeNote = event.theme ? `\n- **Theme Direction**: ${event.theme}` : '';
+  const foodNote = event.foodPreferences ? `\n- **Menu Preference**: ${event.foodPreferences}` : '';
+  const guests = event.guestCount || 100;
 
   return {
-    message: `📋 **Tailored Plan Overview for ${event.name}:**\n\n- **Occasion**: ${OCCASION_LABEL[event.occasion] || event.occasion}\n- **Timeline**: ${days !== null ? (days >= 0 ? `${days} days remaining` : `${Math.abs(days)} days ago`) : 'Date unset'}\n- **Checklist**: ${done}/${total} tasks finished (${progressPct}% complete)\n- **Planned Budget**: ${formatINR(event.budget)}${themeNote}${foodNote}\n\n**Top Budget Allocations:**\n${catLines || '- No allocations recorded yet.'}\n\n**Urgent Focus Items:**\n${nextStepLines}\n\n💡 *Generated via local deterministic rules based on your latest event details.*`,
-    suggestions: ['How should I split my budget?', 'Give me decoration ideas', 'Food planning tips', 'Vendor booking tips'],
+    message: `📋 **Tailored Plan Overview for ${event.name}:**\n\n- **Occasion**: ${OCCASION_LABEL[event.occasion] || event.occasion}\n- **Headcount**: ${guests} guests (~${formatINR(Math.round(parseNumber(event.budget) / guests))}/guest)\n- **Timeline**: ${days !== null ? (days >= 0 ? `${days} days remaining` : `${Math.abs(days)} days ago`) : 'Date unset'}\n- **Checklist Progress**: ${done}/${total} tasks finished (${progressPct}% complete)\n- **Planned Budget**: ${formatINR(event.budget)}${themeNote}${foodNote}\n\n**Top Budget Allocations:**\n${catLines || '- No allocations recorded yet.'}\n\n**Next Unblocked Tasks to Complete:**\n${nextStepLines}\n\n💡 *Calculated deterministically using connected event data and task dependencies.*`,
+    suggestions: ['How should I split my budget?', 'Where can I cut costs?', 'What should I do first?', 'Food planning tips'],
   };
 }
 
@@ -136,63 +235,73 @@ function decorationResponse(event) {
   const themeIntro = event.theme ? `✨ **Selected Theme:** *${event.theme}*\n\n` : '';
   const themes = {
     wedding: [
-      'Classic white and gold with floral centrepieces',
-      'Rustic bohemian with dried flowers and fairy lights',
-      'Modern minimalist with geometric arch and white drapes',
-      'Garden romantic with rose garlands and candle lanterns',
+      'Classic Ivory and Gold with brass urlis, warm fairy lights, and floral garlands',
+      'Rustic Bohemian with pampas grass, macrame arches, and wooden barrels',
+      'Modern Minimalist with geometric structures, sheer white drapes, and monoline lighting',
+      'Royal Garden with rose arches, candle lanterns, and velvet accents',
     ],
     birthday: [
-      'Pastel balloon arch with a custom "Happy Birthday" banner',
-      'Jungle / safari theme with tropical leaves and animals',
-      'Retro 90s theme with cassette tape props and neon signs',
-      'Elegant gold and black theme with candle centrepieces',
-      'DIY photo booth corner with printed props',
+      'Pastel balloon garland arch with custom neon name signage',
+      'Tropical Jungle safari with faux monstera leaves and wooden accents',
+      'Retro 90s vintage with cassette props, vinyl records, and disco lighting',
+      'Elegant Gold and Black with ambient tea lights and minimalist centerpieces',
     ],
     community: [
-      'Cultural motifs with rangoli, marigold strings, and fabric bunting',
-      'Festive banner wall with event logo and sponsor boards',
-      'Eco-friendly upcycled decoration using cloth and natural elements',
-      'Modern branding with printed standees and colour-coordinated stage',
+      'Traditional cultural rangoli with marigold floral backdrops and fabric canopies',
+      'Eco-friendly sustainable decor using potted plants that attendees can adopt',
+      'Modern community festival with branded banners and color-coordinated stages',
     ],
   };
   const list = (themes[event.occasion] || themes.birthday).map(t => `- ${t}`).join('\n');
   return {
-    message: `${themeIntro}🎨 **Decoration ideas for your ${OCCASION_LABEL[event.occasion] || 'event'}:**\n\n${list}\n\n💡 **Budget note:** If your budget is tight, focus on a single wow-factor element (like a balloon arch or floral wall) rather than decorating everything.`,
-    suggestions: ['Food ideas', 'Budget tips', 'Venue suggestions'],
+    message: `${themeIntro}🎨 **Decoration Ideas for your ${OCCASION_LABEL[event.occasion] || 'event'}:**\n\n${list}\n\n💡 **Cost-Saving Tip:** Focus budget on a single focal photo backdrop rather than dispersing decor sparsely throughout a large space.`,
+    suggestions: ['Where can I cut costs?', 'Food planning tips', 'Venue suggestions'],
   };
 }
 
 function foodResponse(event) {
   if (!event) return fallbackResponse();
-  const foodIntro = event.foodPreferences ? `🥗 **Dietary Preference:** *${event.foodPreferences}*\n\n` : '';
-  const budget = Number(event.budget) || 0;
-  const guests = Number(event.guestCount) || 50;
+  const foodIntro = event.foodPreferences ? `🥗 **Dietary Direction:** *${event.foodPreferences}*\n\n` : '';
+  const budget = parseNumber(event.budget);
+  const guests = parseNumber(event.guestCount) || 50;
   const foodBudget = { wedding: 0.30, birthday: 0.35, community: 0.30 }[event.occasion] || 0.35;
   const perPersonFood = Math.round((budget * foodBudget) / guests);
 
   const menus = {
-    wedding: `- Full sit-down meal with starters, mains, desserts\n- Live chaat / street-food counter as a crowd favourite\n- Welcome drinks station (mocktails or traditional sherbets)\n- Wedding cake or mithai tower as centrepiece`,
-    birthday: `- Theme-based birthday cake (essential!)\n- Finger foods and snacks for easy mingling\n- Pizza / pasta buffet for younger guests\n- DIY taco / chaat bar for interactive fun`,
-    community: `- Food stalls from local vendors for variety\n- Packaged snack boxes for easy distribution\n- Non-alcoholic beverage station\n- Dessert corner with kulfi or ice cream`,
+    wedding: `- 4 live appetiser counters (Chaat, Dim Sum, Tikkas)\n- Main buffet with 3 vegetarian curries, dal makhani, assorted rotis, biryani\n- Dedicated dessert counter with hot jalebi-rabri, ice creams, and gulab jamun\n- Welcome mocktail & sherbet bar`,
+    birthday: `- Interactive live pasta or taco station\n- Finger food platters: sliders, loaded nachos, and cheese poppers\n- Signature custom theme birthday cake\n- Dessert shooters and mocktails`,
+    community: `- Efficient buffet or pre-packed hygienic thali boxes\n- Regional favorites (biryani, pav bhaji, or poori bhaji)\n- Masala chai and seasonal juice corner`,
   };
 
   return {
-    message: `${foodIntro}🍽️ **Food planning for ${guests} guests:**\n\nEstimated catering budget: **${formatINR(Math.round(budget * foodBudget))}** (~${formatINR(perPersonFood)}/person)\n\n**Menu ideas:**\n${menus[event.occasion] || menus.birthday}\n\n💡 **Tip:** Book your caterer at least 3–4 weeks in advance. Always confirm final headcount 5–7 days before the event.`,
-    suggestions: ['Decoration ideas', 'Vendor tips', 'Budget breakdown'],
+    message: `${foodIntro}🍽️ **Catering & Menu Planning for ${guests} guests:**\n\n- **Target Catering Spend**: ~**${formatINR(Math.round(budget * foodBudget))}**\n- **Estimated Rate**: ~**${formatINR(perPersonFood)} per plate**\n\n**Recommended Menu Structure:**\n${menus[event.occasion] || menus.birthday}\n\n💡 **Planning Rule:** Confirm tasting sessions 6–8 weeks before the event. Submit final RSVPs to the caterer 7 days prior to prevent food wastage or surprise surcharges.`,
+    suggestions: ['How should I split my budget?', 'Where can I cut costs?', 'Vendor booking tips'],
   };
 }
 
 function venueResponse(event) {
   if (!event) return fallbackResponse();
+  const guests = event.guestCount || 100;
   const venues = {
-    wedding: ['Banquet hall with in-house catering', 'Garden or farmhouse venue', 'Hotel ballroom', 'Heritage or palace venue for premium budgets'],
-    birthday: ['Home backyard or terrace', 'Community hall or clubhouse', 'Restaurant private dining', 'Outdoor park with a permit'],
-    community: ['Public park or maidan', 'School or college grounds', 'Community centre hall', 'Rooftop venue for smaller gatherings'],
+    wedding: [
+      `Banquet Hall (ensure verified capacity for ${guests}+ guests with dining hall)`,
+      'Lawn / Farmhouse with weather contingencies (monsoon/summer water cooling)',
+      'Hotel Ballroom with integrated rooms for family stay and green rooms',
+    ],
+    birthday: [
+      'Residential clubhouse or terrace garden',
+      'Private party lounge / cafe with sound system',
+      'Community hall or lawn',
+    ],
+    community: [
+      'Public auditorium or school ground (check civic noise permits)',
+      'Community center sports complex',
+    ],
   };
   const list = (venues[event.occasion] || venues.birthday).map(v => `- ${v}`).join('\n');
   return {
-    message: `📍 **Venue suggestions for your ${OCCASION_LABEL[event.occasion] || 'event'}:**\n\n${list}\n\n💡 **Key venue checklist:**\n- Confirm capacity for ${event.guestCount || '?'} guests\n- Check parking and accessibility\n- Ask about included furniture, AV, and kitchen access\n- Get the booking confirmation in writing`,
-    suggestions: ['Decoration ideas', 'Food planning tips', 'Vendor tips'],
+    message: `📍 **Venue Guidance for ${guests} guests:**\n\n${list}\n\n💡 **Essential Venue Checks:**\n- Verify floating vs seating capacity for ${guests} people\n- Inquire about generator backup and electrical load limits\n- Confirm whether outside catering and decorators are permitted without penalty royalty fees`,
+    suggestions: ['What should I do first?', 'Decoration ideas', 'Food planning tips'],
   };
 }
 
@@ -200,40 +309,41 @@ function urgentResponse(event, tasks) {
   if (!event) return fallbackResponse();
   const days = daysUntil(event.date);
   const pending = (tasks || []).filter(t => !t.completed);
-  const pendingCount = pending.length;
 
   if (days === null || days < 0) {
     return {
-      message: `📅 This event has already passed. You can review what went well or duplicate the event for next time!`,
-      suggestions: ['Duplicate event', 'Clear completed tasks'],
+      message: `📅 This event date has passed. You can duplicate this event in **My Events** to reuse its task list and budget structure for your next celebration.`,
+      suggestions: ['Plan New Event', 'View My Events'],
     };
   }
 
-  let urgencyText = '';
-  if (days === 0) urgencyText = "🚨 **It's event day!** Here's your final checklist:";
-  else if (days <= 3) urgencyText = `🚨 **Only ${days} day${days !== 1 ? 's' : ''} to go!** Focus on these urgent items:`;
-  else if (days <= 7) urgencyText = `⚠️ **${days} days remaining.** Here are your top priorities:`;
-  else urgencyText = `📋 **${days} days to your event.** Here's what to tackle next:`;
+  const overdue = pending.filter(t => t.deadline && daysUntil(t.deadline) < 0);
+  const critical = pending.filter(t => t.deadline && daysUntil(t.deadline) >= 0 && daysUntil(t.deadline) <= 3);
 
-  const topTasks = pending
+  let statusHeader = `📋 **Urgent Action Items (${days} days to ${event.name}):**`;
+  if (overdue.length > 0) {
+    statusHeader = `⚠️ **Attention Required:** You have **${overdue.length} overdue task${overdue.length !== 1 ? 's' : ''}** needing immediate resolution.`;
+  }
+
+  const topItems = pending
     .sort((a, b) => {
-      const p = { high: 0, medium: 1, low: 2 };
-      return (p[a.priority] ?? 2) - (p[b.priority] ?? 2);
+      const da = daysUntil(a.deadline) ?? 999;
+      const db = daysUntil(b.deadline) ?? 999;
+      return da - db;
     })
-    .slice(0, 5)
-    .map(t => `- ${t.title}`)
-    .join('\n');
+    .slice(0, 4)
+    .map(t => `- **${t.title}** (Due: ${t.deadline ? daysUntilLabel(daysUntil(t.deadline)) : 'No deadline'})`);
 
   return {
-    message: `${urgencyText}\n\n${topTasks || 'All tasks are complete — great job! 🎉'}\n\n*${pendingCount} task${pendingCount !== 1 ? 's' : ''} remaining.*`,
-    suggestions: ['Budget breakdown', 'Vendor tips', 'Decoration ideas'],
+    message: `${statusHeader}\n\n${topItems.join('\n') || 'All current milestones are completed! 🎉'}\n\n*${pending.length} total pending tasks remaining.*`,
+    suggestions: ['What should I do first?', 'Where can I cut costs?', 'How should I split my budget?'],
   };
 }
 
 function vendorResponse(event) {
   return {
-    message: `🏢 **Vendor planning tips:**\n\n- **Caterer:** Book 3–4 weeks ahead. Ask for a tasting session.\n- **Photographer:** Book 4–6 weeks ahead; always review portfolios.\n- **Decorator:** Book 2–3 weeks ahead with a confirmed theme.\n- **DJ / Entertainment:** Book at least 2 weeks ahead.\n- **Venue:** Confirm 4–8 weeks ahead with a signed agreement.\n\n💡 **Compare at least 2–3 quotes** for each category and track them in the Vendor Manager.`,
-    suggestions: ['Food planning tips', 'Budget tips', 'Decoration ideas'],
+    message: `🏢 **Vendor Sourcing & Quotation Strategy:**\n\n- **Never accept verbal quotes**: Always request written itemized quotes with taxes (GST), overtime charges, and security deposits.\n- **Venue & Caterer**: Book first — they command 55–65% of your total budget.\n- **Photographer**: Review complete wedding galleries rather than curated highlight reels.\n- **Compare Inclusions**: In the **Vendor Manager**, use "Compare Quotes" to check price per guest and identify missing inclusions.\n\n💡 *Gatherly AI does not verify vendor availability or endorse businesses. All quotes are managed by you.*`,
+    suggestions: ['Where can I cut costs?', 'How should I split my budget?', 'Food planning tips'],
   };
 }
 
@@ -241,77 +351,62 @@ function ideasResponse(event) {
   if (!event) return fallbackResponse();
   const ideas = {
     wedding: [
-      '🌸 Digital RSVP and event website for your guests',
-      '📸 Polaroid photo wall as a guestbook alternative',
-      '🎵 Curate a collaborative Spotify playlist guests can add to',
-      '🌿 Eco-friendly decor: potted plants guests take home',
+      '🌸 Digital RSVP with QR code on save-the-date cards to eliminate manual headcount follow-ups',
+      '📸 Live polaroid guestbook station where attendees stick instant photos with personal notes',
+      '🎵 Collaborative Spotify reception playlist shared with attendees',
+      '🌿 Seed-paper or potted succulent return favors that guests can grow at home',
     ],
     birthday: [
-      '🎂 Personalised dessert station with mini cakes',
-      '📷 Themed photo booth with custom props',
-      '🎮 Interactive games: trivia, karaoke, or dance-off',
-      '🎁 DIY favour bags with local sweets or snacks',
+      '🎂 Customized photo-reveal cake or mini dessert towers',
+      '📷 Disposable camera on each table for spontaneous retro photos',
+      '🎮 Interactive trivia contest about the birthday person',
+      '🎁 Themed snack bags with handwritten thank-you notes',
     ],
     community: [
-      '🎤 Open mic or talent showcase slot',
-      '🏆 Community quiz or raffle with local prizes',
-      '🤝 Volunteer recognition wall or board',
-      '📱 Event hashtag for social sharing',
+      '🎤 Community open mic and cultural performance spotlight',
+      '🏆 Local artisan raffle or quiz with proceeds donated to a neighborhood cause',
+      '🤝 Dedicated volunteer appreciation photo wall',
     ],
   };
   const list = (ideas[event.occasion] || ideas.birthday).map(i => `- ${i}`).join('\n');
   return {
-    message: `✨ **Unique ideas for your ${OCCASION_LABEL[event.occasion] || 'event'}:**\n\n${list}\n\nCheck the **Inspiration & Ideas** section for a full curated collection tailored to your event!`,
-    suggestions: ['Decoration ideas', 'Food planning tips', 'Budget tips'],
-  };
-}
-
-function checklistResponse(event, tasks) {
-  if (!event || !tasks) return fallbackResponse();
-  const total = tasks.length;
-  const done = tasks.filter(t => t.completed).length;
-  const pending = total - done;
-  const pct = total > 0 ? Math.round((done / total) * 100) : 0;
-
-  const nextTasks = tasks
-    .filter(t => !t.completed)
-    .sort((a, b) => {
-      const p = { high: 0, medium: 1, low: 2 };
-      return (p[a.priority] ?? 2) - (p[b.priority] ?? 2);
-    })
-    .slice(0, 3)
-    .map(t => `- **${t.priority.toUpperCase()}**: ${t.title}`)
-    .join('\n');
-
-  return {
-    message: `✅ **Checklist status for ${event.name}:**\n\n📊 **${done} / ${total} tasks complete** (${pct}%)\n\n**Next up:**\n${nextTasks || 'All done!'}\n\nOpen the **Timeline & Checklist** tab to manage and mark tasks.`,
-    suggestions: ['Budget tips', 'Vendor tips', 'Decoration ideas'],
+    message: `✨ **Creative Ideas for your ${OCCASION_LABEL[event.occasion] || 'event'}:**\n\n${list}\n\nExplore more curated themes in the **Inspiration** section.`,
+    suggestions: ['Decoration ideas', 'Food planning tips', 'Where can I cut costs?'],
   };
 }
 
 function fallbackResponse() {
   return {
-    message: `🤔 I didn't quite catch that. Here's what I can help with:\n\n- **Budget** — how to split your budget\n- **Decorations** — theme and decor ideas\n- **Food** — menu and catering tips\n- **Venue** — venue suggestions\n- **Urgent tasks** — what to do next\n- **Vendors** — booking tips\n- **Ideas** — unique touches for your event\n\nTry asking something like *"Give me decoration ideas"* or *"How should I plan my budget?"*`,
-    suggestions: ['Budget tips', 'Decoration ideas', 'Food planning tips', 'What should I do next?'],
+    message: `🤔 I specialize in deterministic event planning logic for your occasion, budget, timeline, and vendors. Here are topics I can help with:\n\n- **Budget & Trade-offs**: *"How should I split my budget?"* or *"Where can I cut costs?"*\n- **Timeline & Dependencies**: *"What tasks should I do first?"* or *"What is overdue?"*\n- **Headcount Impact**: *"What happens if guest count increases?"*\n- **Food & Decor**: *"Give me catering tips"* or *"Suggest decoration ideas"*\n\nTry selecting one of the suggested prompts below:`,
+    suggestions: [
+      'What should I do first?',
+      'How should I split my budget?',
+      'Where can I cut costs?',
+      'Food planning tips',
+    ],
   };
 }
 
-// ─── Main entry ───────────────────────────────────────────────────────────────
+// ─── Main Dispatcher ─────────────────────────────────────────────────────────
 
 export function getAssistantResponse(input, event = null, tasks = []) {
   const intent = detectIntent(input);
   switch (intent) {
-    case 'plan':       return generatePlanResponse(event, tasks);
-    case 'greeting':   return greetingResponse(event);
-    case 'budget':     return budgetResponse(event, tasks);
-    case 'decoration': return decorationResponse(event);
-    case 'food':       return foodResponse(event);
-    case 'venue':      return venueResponse(event);
+    case 'plan':         return generatePlanResponse(event, tasks);
+    case 'tradeoff':     return tradeOffResponse(event, tasks);
+    case 'dependency':   return dependencyResponse(event, tasks);
+    case 'guest_impact': return guestImpactResponse(event, tasks);
+    case 'greeting':     return greetingResponse(event);
+    case 'budget':       return budgetResponse(event, tasks);
+    case 'decoration':   return decorationResponse(event);
+    case 'food':         return foodResponse(event);
+    case 'venue':        return venueResponse(event);
+    case 'photo':        return tradeOffResponse(event, tasks);
     case 'urgent':
-    case 'checklist':  return urgentResponse(event, tasks);
-    case 'vendor':     return vendorResponse(event);
-    case 'ideas':      return ideasResponse(event);
-    default:           return fallbackResponse();
+    case 'checklist':    return urgentResponse(event, tasks);
+    case 'vendor':       return vendorResponse(event);
+    case 'ideas':        return ideasResponse(event);
+    default:             return fallbackResponse();
   }
 }
 
@@ -321,11 +416,11 @@ export function getWelcomeMessage(event) {
 
 export const SUGGESTED_PROMPTS = [
   'Generate My Plan',
+  'What should I do first?',
   'How should I split my budget?',
-  'Give me decoration ideas',
+  'Where can I cut costs?',
   'Food planning tips',
-  'What should I do next?',
+  'Give me decoration ideas',
+  'What happens if guest count increases?',
   'Vendor booking tips',
-  'Unique event ideas',
-  'How is my checklist progress?',
 ];

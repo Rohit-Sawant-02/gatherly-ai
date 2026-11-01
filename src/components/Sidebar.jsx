@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import {
   LayoutDashboard, Calendar, List, DollarSign, CheckSquare,
   Users, Lightbulb, Settings, ChevronLeft, ChevronRight,
-  Sparkles, Menu, X
+  Sparkles, Menu, X, LogOut, User
 } from 'lucide-react';
 import { useApp } from '../context/AppContext.jsx';
 
@@ -18,7 +18,7 @@ const NAV_ITEMS = [
 ];
 
 export default function Sidebar() {
-  const { state, navigate, activeEvent } = useApp();
+  const { state, navigate, activeEvent, logout } = useApp();
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
 
@@ -87,7 +87,7 @@ export default function Sidebar() {
         <button
           onClick={() => handleNav('events')}
           title="View active event in My Events"
-          className="mx-2 mb-3 px-3 py-2.5 bg-gold-50 hover:bg-gold-100 border border-gold-200 rounded-lg text-left transition-colors"
+          className="mx-2 mb-2 px-3 py-2 bg-gold-50 hover:bg-gold-100 border border-gold-200 rounded-lg text-left transition-colors"
         >
           <p className="text-[10px] text-gold-700 font-semibold uppercase tracking-wide mb-0.5">Active Event</p>
           <p className="text-xs text-charcoal-800 font-semibold truncate">
@@ -96,6 +96,44 @@ export default function Sidebar() {
           <p className="text-[10px] text-charcoal-500 capitalize">{activeEvent.occasion}</p>
         </button>
       )}
+
+      {/* Demo user profile & logout */}
+      <div className="mx-2 mb-2 pt-2 border-t border-ivory-200">
+        {!collapsed ? (
+          <div className="flex items-center justify-between p-2 rounded-lg bg-ivory-50 border border-ivory-200">
+            <div className="flex items-center gap-2 min-w-0">
+              <div className="w-7 h-7 rounded-full bg-sage-100 flex items-center justify-center flex-shrink-0 text-sage-700">
+                <User size={14} />
+              </div>
+              <div className="min-w-0">
+                <p className="text-xs font-semibold text-charcoal-800 truncate">
+                  {state.user?.name || 'Demo Planner'}
+                </p>
+                <p className="text-[10px] text-charcoal-400 truncate">
+                  {state.user?.email || 'demo@gatherly.app'}
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={logout}
+              aria-label="Log out of demo session"
+              title="Log out (data preserved)"
+              className="p-1.5 rounded-md text-charcoal-400 hover:text-red-600 hover:bg-red-50 transition-colors"
+            >
+              <LogOut size={14} />
+            </button>
+          </div>
+        ) : (
+          <button
+            onClick={logout}
+            aria-label="Log out"
+            title="Log out (data preserved)"
+            className="w-full flex items-center justify-center p-2 rounded-lg text-charcoal-400 hover:text-red-600 hover:bg-red-50 transition-colors"
+          >
+            <LogOut size={16} />
+          </button>
+        )}
+      </div>
 
       {/* Collapse toggle */}
       <button

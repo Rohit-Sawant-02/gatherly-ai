@@ -1,8 +1,22 @@
 import React, { useState } from 'react';
-import { Calendar, Trash2, Copy, ChevronRight, ExternalLink, Pencil } from 'lucide-react';
+import { Calendar, Trash2, Copy, ChevronRight, ExternalLink, Pencil, AlertTriangle, CheckCircle2, Sliders } from 'lucide-react';
 import { useApp } from '../context/AppContext.jsx';
 import { Button, Card, Badge, EmptyState, ProgressBar, ConfirmDialog, SectionHeader, Modal, Input, Select, Textarea } from './ui/index.jsx';
-import { formatINR, formatDate, daysUntil, daysUntilLabel, urgencyLevel, calcProgress, generateId, parseNumber, generateBudgetAllocations, validateEvent } from '../utils/helpers.js';
+import {
+  formatINR,
+  formatDate,
+  daysUntil,
+  daysUntilLabel,
+  urgencyLevel,
+  calcProgress,
+  generateId,
+  parseNumber,
+  validateEvent,
+  recalculateAllocationsPreservingSpent,
+  detectEventChangeConflicts,
+  DEFAULT_PRIORITIES,
+} from '../utils/helpers.js';
+import { rescheduleTasksOnDateShift } from '../utils/tasks.js';
 
 const OCCASION_LABELS = { wedding: '💍 Wedding', birthday: '🎂 Birthday', community: '🌿 Community' };
 const OCCASION_COLORS = { wedding: 'gold', birthday: 'sage', community: 'default' };
@@ -10,13 +24,14 @@ const OCCASION_COLORS = { wedding: 'gold', birthday: 'sage', community: 'default
 function EditEventModal({ isOpen, onClose, onSave, event }) {
   const [form, setForm] = useState(() => ({
     name: event?.name || '',
-    occasion: event?.occasion || 'birthday',
+    occasion: event?.occasion || 'wedding',
     date: event?.date || '',
     guestCount: event?.guestCount || '',
     budget: event?.budget || '',
     location: event?.location || '',
     theme: event?.theme || '',
     foodPreferences: event?.foodPreferences || '',
+    primaryFocus: event?.primaryFocus || 'balanced',
     notes: event?.notes || '',
   }));
   const [errors, setErrors] = useState({});
@@ -25,13 +40,14 @@ function EditEventModal({ isOpen, onClose, onSave, event }) {
     if (event) {
       setForm({
         name: event.name || '',
-        occasion: event.occasion || 'birthday',
+        occasion: event.occasion || 'wedding',
         date: event.date || '',
         guestCount: event.guestCount || '',
         budget: event.budget || '',
         location: event.location || '',
         theme: event.theme || '',
         foodPreferences: event.foodPreferences || '',
+        primaryFocus: event.primaryFocus || 'balanced',
         notes: event.notes || '',
       });
       setErrors({});
@@ -47,17 +63,26 @@ function EditEventModal({ isOpen, onClose, onSave, event }) {
       setErrors(validationErrors);
       return;
     }
+
+    // Map primary focus to priorities
+    const basePriorities = { ...(DEFAULT_PRIORITIES[form.occasion] || DEFAULT_PRIORITIES.wedding) };
+    if (form.primaryFocus === 'food') basePriorities.catering = 'high';
+    if (form.primaryFocus === 'venue') basePriorities.venue = 'high';
+    if (form.primaryFocus === 'photography') basePriorities.photography = 'high';
+    if (form.primaryFocus === 'decor') basePriorities.decorations = 'high';
+
     onSave({
       ...event,
       ...form,
       guestCount: parseNumber(form.guestCount),
       budget: parseNumber(form.budget),
+      priorities: basePriorities,
     });
     onClose();
   };
 
   return (
-    <Modal isOpen={isOpen} onClose={onClose} title="Edit Event" size="lg">
+    <Modal isOpen={isOpen} onClose={onClose} title="Edit Event Details" size="lg">
       <form onSubmit={handleSubmit} className="space-y-4">
         <Input
           id="edit-event-name" label="Event Name" required
@@ -85,6 +110,7 @@ function EditEventModal({ isOpen, onClose, onSave, event }) {
             id="edit-guest-count" label="Guest Count" type="number" required
             value={form.guestCount} onChange={set('guestCount')}
             error={errors.guestCount}
+            hint="Headcount connects to catering and venue"
           />
           <Input
             id="edit-budget" label="Budget (₹)" type="number" required prefix="₹"
@@ -92,11 +118,25 @@ function EditEventModal({ isOpen, onClose, onSave, event }) {
             error={errors.budget}
           />
         </div>
-        <Input
-          id="edit-location" label="Location / Venue"
-          value={form.location} onChange={set('location')}
-          placeholder="Venue address or name"
-        />
+        <div className="grid grid-cols-2 gap-4">
+          <Select
+            id="edit-primary-focus" label="Primary Planning Priority"
+            value={form.primaryFocus} onChange={set('primaryFocus')}
+            options={[
+              { value: 'balanced', label: 'Balanced Experience' },
+              { value: 'food', label: 'Food & Catering Focus' },
+              { value: 'venue', label: 'Venue & Ambience Focus' },
+              { value: 'photography', label: 'Photography & Memories Focus' },
+              { value: 'decor', label: 'Decorations & Grandeur Focus' },
+            ]}
+            hint="Guides trade-off suggestions and budget splits"
+          />
+          <Input
+            id="edit-location" label="Location / Venue"
+            value={form.location} onChange={set('location')}
+            placeholder="Venue address or name"
+          />
+        </div>
         <div className="grid grid-cols-2 gap-4">
           <Input
             id="edit-theme" label="Theme"
@@ -232,6 +272,8 @@ export default function MyEvents() {
   const { state, dispatch, navigate } = useApp();
   const [filter, setFilter] = useState('all');
   const [editingEvent, setEditingEvent] = useState(null);
+  const [changeConflicts, setChangeConflicts] = useState([]);
+  const [changeSuccess, setChangeSuccess] = useState('');
 
   const filtered = state.events.filter(e => {
     const days = daysUntil(e.date);
@@ -264,17 +306,45 @@ export default function MyEvents() {
   };
 
   const handleSaveEdit = (updatedEvent) => {
-    let updatedAllocations = updatedEvent.budget_allocations;
-    if (editingEvent && updatedEvent.budget !== editingEvent.budget) {
-      updatedAllocations = generateBudgetAllocations(updatedEvent.budget, updatedEvent.occasion);
+    if (!editingEvent) return;
+
+    // Detect conflicts between old event and edited event
+    const detected = detectEventChangeConflicts(editingEvent, updatedEvent);
+    setChangeConflicts(detected);
+
+    let updatedAllocations = editingEvent.budget_allocations || [];
+    const budgetChanged = updatedEvent.budget !== editingEvent.budget;
+    const guestsChanged = updatedEvent.guestCount !== editingEvent.guestCount;
+    const occasionChanged = updatedEvent.occasion !== editingEvent.occasion;
+
+    if (budgetChanged || guestsChanged || occasionChanged) {
+      updatedAllocations = recalculateAllocationsPreservingSpent(
+        editingEvent.budget_allocations || [],
+        updatedEvent.budget,
+        updatedEvent.occasion,
+        updatedEvent.guestCount,
+        updatedEvent.priorities || {}
+      );
     }
+
+    // Reschedule task deadlines if event date moved
+    let updatedTasks = editingEvent.tasks || [];
+    if (editingEvent.date && updatedEvent.date && editingEvent.date !== updatedEvent.date) {
+      const rescheduled = rescheduleTasksOnDateShift(updatedTasks, updatedEvent.date, editingEvent.date);
+      updatedTasks = rescheduled.updatedTasks;
+    }
+
     dispatch({
       type: 'UPDATE_EVENT',
       payload: {
         ...updatedEvent,
+        tasks: updatedTasks,
         budget_allocations: updatedAllocations,
       },
     });
+
+    setChangeSuccess(`"${updatedEvent.name}" updated! Allocations and timelines updated without erasing custom data.`);
+    setTimeout(() => setChangeSuccess(''), 5000);
     setEditingEvent(null);
   };
 
@@ -295,6 +365,32 @@ export default function MyEvents() {
           </Button>
         }
       />
+
+      {changeSuccess && (
+        <div role="status" className="flex items-center gap-2 p-3 bg-sage-50 border border-sage-200 rounded-xl text-sm text-sage-800 mb-5 animate-fadeIn">
+          <CheckCircle2 size={16} className="text-sage-600 flex-shrink-0" />
+          <span>{changeSuccess}</span>
+        </div>
+      )}
+
+      {changeConflicts.length > 0 && (
+        <div className="space-y-2 mb-5">
+          {changeConflicts.map((c, i) => (
+            <div
+              key={i}
+              role="alert"
+              className={`flex items-start gap-2.5 p-3 rounded-xl border text-xs leading-relaxed ${
+                c.severity === 'high' ? 'bg-red-50 border-red-200 text-red-800' : 'bg-gold-50 border-gold-200 text-gold-900'
+              }`}
+            >
+              <AlertTriangle size={14} className="flex-shrink-0 mt-0.5 text-amber-600" aria-hidden="true" />
+              <div>
+                <strong className="font-semibold">{c.title}:</strong> {c.message}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       {state.events.length > 0 && (
         <div className="flex gap-2 mb-6" role="group" aria-label="Filter events">

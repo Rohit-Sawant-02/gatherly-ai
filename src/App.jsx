@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { AppProvider, useApp } from './context/AppContext.jsx';
+import LoginPage from './components/LoginPage.jsx';
 import Sidebar from './components/Sidebar.jsx';
 import Dashboard from './components/Dashboard.jsx';
 import EventWizard from './components/EventWizard.jsx';
@@ -15,6 +16,11 @@ import { Bot, X } from 'lucide-react';
 function AppContent() {
   const { state } = useApp();
   const [assistantOpen, setAssistantOpen] = useState(false);
+
+  // If user is not authenticated, show the demo login screen
+  if (!state.isAuthenticated) {
+    return <LoginPage />;
+  }
 
   const sections = {
     dashboard: Dashboard,
