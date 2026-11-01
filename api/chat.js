@@ -68,16 +68,11 @@ export default async function handler(req, res) {
     res.setHeader('Content-Type', 'application/json');
     res.end(JSON.stringify(result));
   } catch (err) {
-    // Sanitize error message to prevent leaking internal stack traces or keys
-    const isClientFriendly = err.message?.includes('rate limit') || err.message?.includes('GEMINI_API_KEY');
-    const safeError = isClientFriendly
-      ? err.message
-      : 'The AI planning assistant encountered a temporary service issue. Please try again or use the local planner.';
-
+    console.error('API /api/chat error:', err.message);
     res.statusCode = err.message?.includes('GEMINI_API_KEY') ? 503 : 500;
     res.setHeader('Content-Type', 'application/json');
     res.end(JSON.stringify({
-      error: safeError,
+      error: err.message || 'The AI planning assistant encountered a temporary service issue.',
       fallbackAvailable: true,
     }));
   }
