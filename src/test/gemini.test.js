@@ -101,3 +101,4 @@ describe('Gemini Service - callGeminiAPI Key Enforcement', () => {
     ).rejects.toThrow('GEMINI_API_KEY is not configured');
   });
 });
+

@@ -159,3 +159,4 @@ export async function askGatherlyAI(message, activeEvent, tasks = [], vendors = 
     };
   }
 }
+
