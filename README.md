@@ -168,11 +168,13 @@ Executes 108 automated unit and integration tests across currency helpers, budge
 
 ## Deployment Compatibility
 
-- **Existing Deployment**: [https://gatherly-ai-livid.vercel.app/](https://gatherly-ai-livid.vercel.app/)
+- **Existing Deployment**: [https://gatherly-ai-livid.app/](https://gatherly-ai-livid.app/)
+- **Final Deployment**:
+[https://gatherly-ai.antideploy.app/](https://gatherly-ai.antideploy.app/)
 - **Target Platforms**: Antideploy, Vercel, Netlify, or any Node.js container environment.
 - **Vercel / Antideploy Serverless Functions**:
   - `api/chat.js` handles serverless POST requests with rate limiting and input sanitization.
-  - `api/health.js` reports deployment health and capability status.
+  - `api/health.js` reports deployment health andapability status.
   - `vercel.json` and `netlify.toml` include strict security headers (`X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`).
 - **Required Server Environment Variable**:
   - Set `GEMINI_API_KEY` in the hosting provider's environment variables dashboard.
